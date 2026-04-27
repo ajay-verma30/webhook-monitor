@@ -1,4 +1,5 @@
 const { Queue, Worker, QueueEvents } = require('bullmq');
+const { notifyRetryExhausted, notifyLossRecovered, checkAndNotify } = require('../services/notificationService');
 const axios = require('axios');
 const redis = require('../config/redis');
 const db = require('../config/db');
@@ -7,10 +8,10 @@ const db = require('../config/db');
 // RETRY DELAYS — attempt number → delay in ms
 // ─────────────────────────────────────────────
 const RETRY_DELAYS = {
-    1: 5000,          // 5 minutes
-    2: 10000,         // 30 minutes
-    3: 15000,     // 2 hours
-    4: 20000,    // 24 hours
+    1: 5 * 60 * 1000,          // 5 minutes
+    2: 30 * 60 * 1000,         // 30 minutes
+    3: 2 * 60 * 60 * 1000,     // 2 hours
+    4: 24 * 60 * 60 * 1000,    // 24 hours
 };
 
 const MAX_ATTEMPTS = 4;
@@ -42,6 +43,19 @@ const scheduleRetry = async ({ webhookLogId, gatewayId, payload, targetUrl, atte
             [webhookLogId]
         );
         console.log(`🔴 Retry exhausted for webhook: ${webhookLogId}`);
+
+        // Notify user — all retries failed
+        const logRes = await db.query(
+            `SELECT payload FROM webhook_logs WHERE id = $1`, [webhookLogId]
+        );
+        const logPayload = logRes.rows[0]?.payload;
+        await notifyRetryExhausted({
+            gateway_id:     gatewayId,
+            webhookLogId,
+            eventId:        logPayload?.id,
+            amount:         logPayload?.data?.object?.amount ? logPayload.data.object.amount / 100 : 0,
+            declineReason:  logPayload?.data?.object?.outcome?.reason,
+        });
         return;
     }
 
@@ -139,6 +153,12 @@ const retryWorker = new Worker(
             }
 
             console.log(`✅ Retry #${attemptNumber} succeeded for webhook: ${webhookLogId}`);
+
+            // Notify user — payment recovered
+            await notifyLossRecovered({ gateway_id: gatewayId, amount, attemptNumber });
+
+            // Check if overall thresholds are still breached
+            await checkAndNotify({ gateway_id: gatewayId });
 
         } catch (err) {
             // ── FAILED — schedule next attempt ───────────────────────

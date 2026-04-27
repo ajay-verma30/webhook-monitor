@@ -2,6 +2,7 @@ const { logWebhook } = require('../models/webhookModels');
 const db = require('../config/db');
 const axios = require("axios");
 const { scheduleRetry } = require('../queues/retryQueue');
+const { checkAndNotify } = require('../services/notificationService');
 
 // ─────────────────────────────────────────────
 // RCA ADVISOR — maps decline/error codes to
@@ -173,6 +174,13 @@ const handleStripeWebhook = async (req, res) => {
                     }
                 }
             }
+        }
+
+        // Check thresholds and notify if breached
+        if (status === 'FAILED' || status === 'CRITICAL') {
+            checkAndNotify({ gateway_id }).catch(err =>
+                console.error('❌ Notification error:', err.message)
+            );
         }
 
         if (io) {
@@ -364,13 +372,26 @@ const getGatewayAnalytics = async (req, res) => {
             );
         `;
 
-        const [summaryRes, chartRes, errorsRes, recentHitsRes, paymentLossRes, deliveryLossRes] = await Promise.all([
+        // ── 7. Loss Recovered ─────────────────────────────────────────
+        const recoveryQuery = `
+            SELECT
+                COALESCE(SUM(amount), 0)    AS total_recovered,
+                COUNT(*)                    AS recovery_count,
+                COUNT(*) FILTER (WHERE recovery_type = 'AUTO_RETRY')   AS auto_retry_count,
+                COUNT(*) FILTER (WHERE recovery_type = 'MANUAL_RETRY') AS manual_retry_count
+            FROM recovery_logs
+            WHERE gateway_id = $1
+            AND recovered_at >= NOW() - INTERVAL '${config.range}';
+        `;
+
+        const [summaryRes, chartRes, errorsRes, recentHitsRes, paymentLossRes, deliveryLossRes, recoveryRes] = await Promise.all([
             db.query(summaryQuery,         [gateway_id]),
             db.query(chartQuery,           [gateway_id]),
             db.query(errorsQuery,          [gateway_id]),
             db.query(recentHitsQuery,      [gateway_id]),
             db.query(paymentLossQuery,     [gateway_id]),
             db.query(deliveryFailureLossQuery, [gateway_id]),
+            db.query(recoveryQuery,            [gateway_id]),
         ]);
 
         const stats   = summaryRes.rows[0];
@@ -382,6 +403,8 @@ const getGatewayAnalytics = async (req, res) => {
         const paymentLoss     = parseFloat(paymentLossRes.rows[0].total_payment_loss  || 0);
         const deliveryLoss    = parseFloat(deliveryLossRes.rows[0].total_delivery_loss || 0);
         const totalLoss       = paymentLoss + deliveryLoss;
+        const totalRecovered  = parseFloat(recoveryRes.rows[0].total_recovered || 0);
+        const netLoss         = Math.max(0, totalLoss - totalRecovered);
 
         res.status(200).json({
             gateway_id,
@@ -392,23 +415,33 @@ const getGatewayAnalytics = async (req, res) => {
                 failed_events:  failure,
                 success_rate:   `${successRate}%`,
             },
-            // Separated so the dashboard can show them with different CTAs
             loss: {
-                // Bank declines — cannot always be retried
                 payment_loss: {
                     amount:       `$${paymentLoss.toFixed(2)}`,
                     raw:          paymentLoss,
                     charge_count: parseInt(paymentLossRes.rows[0].failed_charge_count || 0),
                 },
-                // Your system failures — always safe to retry
                 delivery_loss: {
-                    amount:           `$${deliveryLoss.toFixed(2)}`,
-                    raw:              deliveryLoss,
-                    failure_count:    parseInt(deliveryLossRes.rows[0].delivery_failure_count || 0),
+                    amount:        `$${deliveryLoss.toFixed(2)}`,
+                    raw:           deliveryLoss,
+                    failure_count: parseInt(deliveryLossRes.rows[0].delivery_failure_count || 0),
                 },
                 total_at_risk: {
                     amount: `$${totalLoss.toFixed(2)}`,
                     raw:    totalLoss,
+                },
+                // Loss Recovered — from successful auto/manual retries
+                recovered: {
+                    amount:              `$${totalRecovered.toFixed(2)}`,
+                    raw:                 totalRecovered,
+                    recovery_count:      parseInt(recoveryRes.rows[0].recovery_count || 0),
+                    auto_retry_count:    parseInt(recoveryRes.rows[0].auto_retry_count || 0),
+                    manual_retry_count:  parseInt(recoveryRes.rows[0].manual_retry_count || 0),
+                },
+                // Net loss after recovery — the most important number
+                net_loss: {
+                    amount: `$${netLoss.toFixed(2)}`,
+                    raw:    netLoss,
                 },
             },
             top_errors:   errorsRes.rows,
