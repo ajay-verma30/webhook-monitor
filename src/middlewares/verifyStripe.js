@@ -12,13 +12,10 @@ const verifyStripeSignature = async (req, res, next) => {
             [gateway_id]
         );
 
-        console.log(result);
 
         if (result.rows.length === 0) return res.status(404).send('Gateway Missing');
 
         const endpointSecret = result.rows[0].webhook_secret;
-        console.log("Secret from DB:", endpointSecret); 
-console.log("Signature from Header:", sig);
 
         const event = stripe.webhooks.constructEvent(req.rawBody, sig, endpointSecret);
 
