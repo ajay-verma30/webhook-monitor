@@ -6,6 +6,7 @@ const db = require('./src/config/db');
 const { registerGateway, getGateways } = require('./src/controllers/adminController');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+require('./src/queues/retryQueue')
 
 const { verifyStripeSignature } = require('./src/middlewares/verifyStripe');
 const { handleStripeWebhook, getGatewayAnalytics, getWebhookDetails, replayWebhook } = require('./src/controllers/webhookController');
