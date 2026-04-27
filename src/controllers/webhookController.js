@@ -64,7 +64,7 @@ const handleStripeWebhook = async (req, res) => {
                 provider_event_id: event.id,
                 event_type: event.type,
                 status: 'IGNORED',          // never counted as a failure
-                http_status: 200,
+                http_status_code: 200,
                 payload: event,
                 error_stack: null,
                 last_error_message: null,
@@ -130,7 +130,7 @@ const handleStripeWebhook = async (req, res) => {
             provider_event_id: event.id,
             event_type: event.type,
             status,
-            http_status: 200,
+            http_status_code: 200,
             payload: event,
             error_stack: errorStack,
             last_error_message: errorMessage,
@@ -201,7 +201,7 @@ const handleStripeWebhook = async (req, res) => {
             provider_event_id: event?.id || 'unknown',
             event_type: event?.type || 'unknown',
             status: 'FAILED',
-            http_status: 500,
+            http_status_code: 500,
             payload: event || req.body,
             error_stack: `System Error: ${err.message}`,
             last_error_message: 'internal_server_error',
@@ -368,7 +368,7 @@ const getGatewayAnalytics = async (req, res) => {
                 OR error_stack ILIKE '%connection%'
                 OR error_stack ILIKE '%ECONNREFUSED%'
                 OR error_stack ILIKE '%500%'
-                OR http_status = 500
+                OR http_status_code = 500
             );
         `;
 
@@ -635,7 +635,7 @@ const replayWebhook = async (req, res) => {
                 provider_event_id,
                 event_type,
                 status,
-                http_status,
+                http_status_code,
                 latency_ms,
                 payload,
                 request_headers,
