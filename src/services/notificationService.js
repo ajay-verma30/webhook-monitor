@@ -1,15 +1,16 @@
-const Brevo = require('@getbrevo/brevo');
+const SibApiV3Sdk = require('sib-api-v3-sdk');
 const axios = require('axios');
 const db = require('../config/db');
 
 // ─────────────────────────────────────────────
 // BREVO CLIENT SETUP
 // ─────────────────────────────────────────────
-const brevoClient = Brevo.ApiClient.instance;
+
+const brevoClient = SibApiV3Sdk.ApiClient.instance;
 const apiKey = brevoClient.authentications['api-key'];
 apiKey.apiKey = process.env.BREVO_API_KEY;
-
-const transactionalEmailsApi = new Brevo.TransactionalEmailsApi();
+console.log("BREVO KEY USED:", apiKey.apiKey);
+const transactionalEmailsApi = new SibApiV3Sdk.TransactionalEmailsApi();
 
 // ─────────────────────────────────────────────
 // DEFAULT THRESHOLDS
@@ -141,7 +142,7 @@ const getEmailTemplate = (type, data) => {
 // ─────────────────────────────────────────────
 const sendEmail = async ({ to, subject, html }) => {
     try {
-        const sendSmtpEmail = new Brevo.SendSmtpEmail();
+        const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
 
         sendSmtpEmail.sender = {
             name:  process.env.BREVO_SENDER_NAME  || 'HookPulse',
@@ -152,10 +153,9 @@ const sendEmail = async ({ to, subject, html }) => {
         sendSmtpEmail.htmlContent = html;
 
         await transactionalEmailsApi.sendTransacEmail(sendSmtpEmail);
-        console.log(`📧 Email sent to ${to} — ${subject}`);
         return true;
     } catch (err) {
-        console.error('❌ Email send failed:', err.message);
+        console.error("❌ FULL ERROR:", JSON.stringify(err.response?.body || err, null, 2));
         return false;
     }
 };
@@ -170,9 +170,7 @@ const getNotifConfig = async (gateway_id) => {
         `SELECT 
             nc.*,
             u.email AS user_email,
-            g.name  AS gateway_name,
-            g.amount_threshold  AS gw_amount_threshold,
-            g.failure_threshold AS gw_failure_threshold
+            g.name  AS gateway_name
          FROM notification_configs nc
          JOIN gateways g ON nc.gateway_id = g.id
          JOIN users u    ON nc.user_id = u.id
@@ -303,65 +301,97 @@ const notifyLossRecovered = async ({ gateway_id, amount, attemptNumber }) => {
 // SLACK MESSAGE BLOCKS
 // ─────────────────────────────────────────────
 const getSlackPayload = (type, data) => {
-    const colors = {
-        threshold_breach: '#EF4444',
-        retry_exhausted:  '#DC2626',
-        loss_recovered:   '#10B981',
-    };
 
-    const messages = {
-        threshold_breach: {
-            text: `⚠️ *HookPulse Alert — ${data.gateway_name}*`,
-            attachments: [{
-                color: colors.threshold_breach,
-                blocks: [
-                    { type: 'section', text: { type: 'mrkdwn', text: `*Threshold Breached*\n${data.breach_message}` }},
-                    { type: 'section', fields: [
-                        { type: 'mrkdwn', text: `*Amount at Risk*\n$${data.total_loss}` },
-                        { type: 'mrkdwn', text: `*Failed Events*\n${data.failed_count}` },
-                        { type: 'mrkdwn', text: `*Recovered*\n$${data.recovered}` },
-                    ]},
-                    { type: 'actions', elements: [{
-                        type: 'button', text: { type: 'plain_text', text: 'View Dashboard' },
-                        url: `${process.env.FRONTEND_URL}/dashboard`, style: 'danger'
-                    }]}
-                ]
-            }]
-        },
-        retry_exhausted: {
-            text: `❌ *Retry Exhausted — ${data.gateway_name}*`,
-            attachments: [{
-                color: colors.retry_exhausted,
-                blocks: [
-                    { type: 'section', text: { type: 'mrkdwn', text: `All *4 retry attempts* failed. Manual intervention required.` }},
-                    { type: 'section', fields: [
-                        { type: 'mrkdwn', text: `*Event ID*\n${data.event_id}` },
-                        { type: 'mrkdwn', text: `*Amount Lost*\n$${data.amount}` },
-                        { type: 'mrkdwn', text: `*Decline Reason*\n${data.decline_reason || 'Unknown'}` },
-                    ]},
-                    { type: 'actions', elements: [{
-                        type: 'button', text: { type: 'plain_text', text: 'View Event' },
-                        url: `${process.env.FRONTEND_URL}/log_details/${data.webhook_log_id}`
-                    }]}
-                ]
-            }]
-        },
-        loss_recovered: {
-            text: `✅ *$${data.amount} Recovered — ${data.gateway_name}*`,
-            attachments: [{
-                color: colors.loss_recovered,
-                blocks: [
-                    { type: 'section', text: { type: 'mrkdwn', text: `Auto-retry attempt *#${data.attempt_number}* succeeded. Payment recovered!` }},
-                    { type: 'actions', elements: [{
-                        type: 'button', text: { type: 'plain_text', text: 'View Dashboard' },
-                        url: `${process.env.FRONTEND_URL}/dashboard`, style: 'primary'
-                    }]}
-                ]
-            }]
-        },
-    };
+    if (type === 'threshold_breach') {
+        return {
+            text: `⚠️ HookPulse Alert — ${data.gateway_name}`,
+            blocks: [
+                {
+                    type: "section",
+                    text: {
+                        type: "mrkdwn",
+                        text: `*⚠️ Threshold Breached*\n${data.breach_message}`
+                    }
+                },
+                {
+                    type: "section",
+                    fields: [
+                        { type: "mrkdwn", text: `*Amount at Risk*\n$${data.total_loss}` },
+                        { type: "mrkdwn", text: `*Failed Events*\n${data.failed_count}` },
+                        { type: "mrkdwn", text: `*Recovered*\n$${data.recovered}` }
+                    ]
+                },
+                {
+                    type: "actions",
+                    elements: [
+                        {
+                            type: "button",
+                            text: { type: "plain_text", text: "View Dashboard" },
+                            url: `${process.env.FRONTEND_URL}/dashboard`
+                        }
+                    ]
+                }
+            ]
+        };
+    }
 
-    return messages[type];
+    if (type === 'retry_exhausted') {
+        return {
+            text: `❌ Retry Exhausted — ${data.gateway_name}`,
+            blocks: [
+                {
+                    type: "section",
+                    text: {
+                        type: "mrkdwn",
+                        text: "All *4 retry attempts* failed. Manual intervention required."
+                    }
+                },
+                {
+                    type: "section",
+                    fields: [
+                        { type: "mrkdwn", text: `*Event ID*\n${data.event_id}` },
+                        { type: "mrkdwn", text: `*Amount Lost*\n$${data.amount}` },
+                        { type: "mrkdwn", text: `*Decline*\n${data.decline_reason || 'Unknown'}` }
+                    ]
+                },
+                {
+                    type: "actions",
+                    elements: [
+                        {
+                            type: "button",
+                            text: { type: "plain_text", text: "View Event" },
+                            url: `${process.env.FRONTEND_URL}/log_details/${data.webhook_log_id}`
+                        }
+                    ]
+                }
+            ]
+        };
+    }
+
+    if (type === 'loss_recovered') {
+        return {
+            text: `✅ $${data.amount} Recovered — ${data.gateway_name}`,
+            blocks: [
+                {
+                    type: "section",
+                    text: {
+                        type: "mrkdwn",
+                        text: `Auto-retry attempt *#${data.attempt_number}* succeeded.`
+                    }
+                },
+                {
+                    type: "actions",
+                    elements: [
+                        {
+                            type: "button",
+                            text: { type: "plain_text", text: "View Dashboard" },
+                            url: `${process.env.FRONTEND_URL}/dashboard`
+                        }
+                    ]
+                }
+            ]
+        };
+    }
 };
 
 
@@ -494,10 +524,15 @@ const getTeamsPayload = (type, data) => {
 const sendSlack = async (webhookUrl, type, data) => {
     if (!webhookUrl) return;
     try {
+        console.log(webhookUrl);
         await axios.post(webhookUrl, getSlackPayload(type, data));
         console.log(`💬 Slack notification sent — ${type}`);
     } catch (err) {
-        console.error('❌ Slack notification failed:', err.message);
+        console.error("❌ SLACK FULL ERROR:",
+  err.response?.status,
+  err.response?.data,
+  err.message
+);
     }
 };
 
