@@ -7,10 +7,10 @@ const db = require('../config/db');
 // RETRY DELAYS — attempt number → delay in ms
 // ─────────────────────────────────────────────
 const RETRY_DELAYS = {
-    1: 5 * 60 * 1000,          // 5 minutes
-    2: 30 * 60 * 1000,         // 30 minutes
-    3: 2 * 60 * 60 * 1000,     // 2 hours
-    4: 24 * 60 * 60 * 1000,    // 24 hours
+    1: 5000,          // 5 minutes
+    2: 10000,         // 30 minutes
+    3: 15000,     // 2 hours
+    4: 20000,    // 24 hours
 };
 
 const MAX_ATTEMPTS = 4;
