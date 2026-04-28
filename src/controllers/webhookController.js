@@ -258,6 +258,7 @@ const getGatewayAnalytics = async (req, res) => {
 
     try {
         const [
+            isActiveRes,
             summaryRes,
             chartRes,
             errorsRes,
@@ -266,6 +267,12 @@ const getGatewayAnalytics = async (req, res) => {
             deliveryLossRes,
             recoveryRes,
         ] = await Promise.all([
+
+            db.query(
+                `SELECT is_active 
+                FROM gateways
+                WHERE id = $1`,[gateway_id]
+            ),
 
             // 1. Summary — excludes IGNORED rows
             db.query(
@@ -398,6 +405,7 @@ const getGatewayAnalytics = async (req, res) => {
         ]);
 
         // ── Derive summary figures ─────────────────────────────────────
+        const isActive = isActiveRes.rows[0]?.is_active ?? false;
         const stats   = summaryRes.rows[0];
         const total   = parseInt(stats.total_count,   10);
         const success = parseInt(stats.success_count, 10);
@@ -412,6 +420,7 @@ const getGatewayAnalytics = async (req, res) => {
 
         return res.status(200).json({
             gateway_id,
+            is_active: isActive,
             filter: filterKey,
             summary: {
                 total_events:   total,

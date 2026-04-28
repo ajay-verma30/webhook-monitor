@@ -11,7 +11,9 @@ require('./src/queues/retryQueue')
 const { verifyStripeSignature } = require('./src/middlewares/verifyStripe');
 const { handleStripeWebhook, getGatewayAnalytics, getWebhookDetails, replayWebhook } = require('./src/controllers/webhookController');
 const { createUser, loginUser, refreshAccessToken, logoutUser} = require('./src/controllers/userController');
+const { getNotificationConfig, saveNotificationConfig } = require('./src/controllers/notificationRoutes')
 const authToken  = require('./src/middlewares/authToken');
+
 
 dotenv.config();
 const app = express();
@@ -46,7 +48,10 @@ app.use(express.json({
 }));
 
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: [
+    'http://localhost:5173', // Frontend (Vite)
+    'http://localhost:3000'  // Backend/Other services
+  ],
   credentials: true
 }));
 
@@ -71,6 +76,9 @@ app.post(
 app.get('/api/v1/analytics/:gateway_id', authToken, getGatewayAnalytics);
 app.get('/api/v1/analytics/log/:webhook_id', authToken, getWebhookDetails);
 app.post('/api/v1/webhooks/replay/:webhook_id', authToken, replayWebhook);
+
+app.post('/api/v1/notifications/config/:gateway_id', authToken, saveNotificationConfig);
+app.get('/api/v1/notifications/config', authToken, getNotificationConfig);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
