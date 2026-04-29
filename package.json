@@ -26,6 +26,7 @@
     "nodemailer": "^8.0.6",
     "path": "^0.12.7",
     "pg": "^8.20.0",
+    "prom-client": "^15.1.3",
     "sib-api-v3-sdk": "^8.5.0",
     "slugify": "^1.6.9",
     "socket.io": "^4.8.3",

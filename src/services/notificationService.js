@@ -6,8 +6,14 @@
  * Sends threshold alerts and payment-lifecycle notifications over Email,
  * Slack, Discord, and Microsoft Teams.
  *
+ * Schema dependency: notification_configs
+ *   Required columns (beyond the original spec):
+ *     - discord_webhook_url / discord_enabled
+ *     - teams_webhook_url   / teams_enabled
+ *     - last_notified_at    (TIMESTAMP — written by markNotified)
+ *
  * Anti-spam design:
- *  - Global per-gateway cooldown (default 30 min) stored in notification_configs.
+ *  - Global per-gateway cooldown (default 30 min) stored in notification_configs.last_notified_at.
  *  - Per-notification-type in-process deduplication (SENT_CACHE) prevents
  *    rapid repeated alerts within the same process restart cycle.
  *  - checkAndNotify() resolves gracefully when nothing is breached — it
@@ -363,17 +369,16 @@ const getTeamsPayload = (type, data) => {
 
 /**
  * Returns true when a notification is allowed to fire, updating the in-process
- * cache if it is.  Does NOT touch the database — DB cooldown is enforced separately
- * in checkAndNotify() so the two guards are independent layers.
+ * cache if it is.  Does NOT touch the database — DB cooldown is enforced separately.
  *
  * @param {string} gatewayId
  * @param {string} type
  * @returns {boolean}
  */
 const isAllowedByCache = (gatewayId, type) => {
-    const key           = `${gatewayId}:${type}`;
-    const lastSent      = SENT_CACHE.get(key);
-    const cooldownMs    = (COOLDOWN_MINUTES[type] ?? 30) * 60 * 1_000;
+    const key        = `${gatewayId}:${type}`;
+    const lastSent   = SENT_CACHE.get(key);
+    const cooldownMs = (COOLDOWN_MINUTES[type] ?? 30) * 60 * 1_000;
 
     if (lastSent && Date.now() - lastSent < cooldownMs) return false;
 
@@ -382,28 +387,34 @@ const isAllowedByCache = (gatewayId, type) => {
 };
 
 /**
- * Returns true when the DB-level cooldown has expired (or was never set).
- * Updates last_notified_at on the notification_config row if the guard passes.
+ * Returns true when the DB-level cooldown has expired (or last_notified_at is null).
+ * NOTE: this does NOT update last_notified_at — call markNotified() after sending.
  *
- * @param {object} config - row from notification_configs
+ * @param {object} config - row from notification_configs (must include last_notified_at)
  * @param {string} type   - notification type key
  * @returns {Promise<boolean>}
  */
 const isAllowedByDb = async (config, type) => {
     if (!config.last_notified_at) return true;
 
-    const cooldownMs  = (COOLDOWN_MINUTES[type] ?? 30) * 60 * 1_000;
-    const elapsed     = Date.now() - new Date(config.last_notified_at).getTime();
+    const cooldownMs = (COOLDOWN_MINUTES[type] ?? 30) * 60 * 1_000;
+    const elapsed    = Date.now() - new Date(config.last_notified_at).getTime();
 
     return elapsed >= cooldownMs;
 };
 
 /**
- * Persists last_notified_at to prevent re-alerts until the cooldown expires.
+ * Persists last_notified_at and bumps updated_at to prevent re-alerts until
+ * the cooldown expires.
+ *
+ * @param {string} configId - notification_configs.id (UUID)
  */
 const markNotified = async (configId) => {
     await db.query(
-        'UPDATE notification_configs SET last_notified_at = NOW() WHERE id = $1',
+        `UPDATE notification_configs
+            SET last_notified_at = NOW(),
+                updated_at       = NOW()
+          WHERE id = $1`,
         [configId],
     );
 };
@@ -417,14 +428,14 @@ const markNotified = async (configId) => {
  */
 const sendEmail = async ({ to, subject, html }) => {
     try {
-        const msg          = new SibApiV3Sdk.SendSmtpEmail();
-        msg.sender         = {
+        const msg       = new SibApiV3Sdk.SendSmtpEmail();
+        msg.sender      = {
             name:  process.env.BREVO_SENDER_NAME  ?? 'HookPulse',
             email: process.env.BREVO_SENDER_EMAIL ?? 'noreply@hookpulse.com',
         };
-        msg.to             = [{ email: to }];
-        msg.subject        = subject;
-        msg.htmlContent    = html;
+        msg.to          = [{ email: to }];
+        msg.subject     = subject;
+        msg.htmlContent = html;
 
         await transactionalEmailsApi.sendTransacEmail(msg);
         console.log(`📧 Email sent → ${to}`);
@@ -473,6 +484,12 @@ const sendTeams = async (webhookUrl, type, data) => {
  * Dispatches a notification to every configured channel concurrently.
  * Promise.allSettled ensures one failing channel never blocks the others.
  *
+ * Channel enablement is driven entirely by the notification_configs row:
+ *   email_enabled   → sendEmail
+ *   slack_enabled   + slack_webhook_url   → sendSlack
+ *   discord_enabled + discord_webhook_url → sendDiscord
+ *   teams_enabled   + teams_webhook_url   → sendTeams
+ *
  * @param {object} config - notification_configs row (joined with gateway + user)
  * @param {string} type   - notification type key
  * @param {object} data   - template data object
@@ -502,10 +519,22 @@ const sendAllChannels = async (config, type, data) => {
 // ─── DB helpers ───────────────────────────────────────────────────────────────
 
 /**
- * Fetches the notification config for a gateway, including the user email and
- * gateway name.  Returns null if no config exists.
+ * Fetches the notification config for a gateway, pulling in the user's email
+ * (from the users table) and the gateway name.
  *
- * @param {string} gatewayId
+ * Returns null when no config exists for the given gateway — callers must handle
+ * this case and skip notification gracefully.
+ *
+ * Columns selected:
+ *   nc.*                  — all notification_configs fields, including:
+ *                           amount_threshold, failure_threshold,
+ *                           notify_threshold_breach, notify_retry_exhausted,
+ *                           notify_loss_recovered, last_notified_at,
+ *                           email/slack/discord/teams enabled flags + webhook URLs
+ *   u.email AS user_email — destination address for email channel
+ *   g.name  AS gateway_name — human-readable label used in all templates
+ *
+ * @param {string} gatewayId  UUID of the gateway
  * @returns {Promise<object|null>}
  */
 const getNotifConfig = async (gatewayId) => {
@@ -529,6 +558,10 @@ const getNotifConfig = async (gatewayId) => {
 /**
  * Evaluates loss/failure thresholds for a gateway and fires a notification if
  * either is breached — subject to both the in-process cache and the DB cooldown.
+ *
+ * Threshold values come from notification_configs:
+ *   amount_threshold  (default 500 USD)
+ *   failure_threshold (default 10 events)
  *
  * Never throws — callers may fire-and-forget.
  *
@@ -574,8 +607,9 @@ const checkAndNotify = async ({ gateway_id, range = '24 hours' }) => {
         const totalLoss   = parseFloat(statsRes.rows[0].total_loss  ?? 0);
         const recovered   = parseFloat(recoveryRes.rows[0].total_recovered ?? 0);
 
-        const amountThreshold  = config.amount_threshold  ?? DEFAULT_THRESHOLDS.amount_lost;
-        const failureThreshold = config.failure_threshold ?? DEFAULT_THRESHOLDS.failed_events;
+        // Use per-gateway thresholds from notification_configs; fall back to defaults
+        const amountThreshold  = parseFloat(config.amount_threshold  ?? DEFAULT_THRESHOLDS.amount_lost);
+        const failureThreshold = parseInt(config.failure_threshold ?? DEFAULT_THRESHOLDS.failed_events, 10);
 
         const amountBreached = totalLoss   >= amountThreshold;
         const countBreached  = failedCount >= failureThreshold;
@@ -605,8 +639,9 @@ const checkAndNotify = async ({ gateway_id, range = '24 hours' }) => {
 
 /**
  * Fires a "retry exhausted" notification when all auto-retry attempts have failed.
+ * Gated by notify_retry_exhausted flag in notification_configs.
  *
- * @param {{ gateway_id, webhookLogId, eventId, amount, declineReason }} params
+ * @param {{ gateway_id: string, webhookLogId: string, eventId: string, amount: number, declineReason: string }} params
  */
 const notifyRetryExhausted = async ({ gateway_id, webhookLogId, eventId, amount, declineReason }) => {
     try {
@@ -634,8 +669,9 @@ const notifyRetryExhausted = async ({ gateway_id, webhookLogId, eventId, amount,
 
 /**
  * Fires a "loss recovered" notification when an auto-retry succeeds.
+ * Gated by notify_loss_recovered flag in notification_configs.
  *
- * @param {{ gateway_id, amount, attemptNumber }} params
+ * @param {{ gateway_id: string, amount: number, attemptNumber: number }} params
  */
 const notifyLossRecovered = async ({ gateway_id, amount, attemptNumber }) => {
     try {

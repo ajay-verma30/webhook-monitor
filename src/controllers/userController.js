@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const { logWebhook } = require('../models/webhookModels');
 
 const createUser = async (req, res) => {
-  let { email, password, full_name } = req.body;
+  let { email, password, full_name, business_name } = req.body;
 
   if (!email || !password || !full_name) {
     return res.status(400).json({ message: "All fields are required" });
@@ -21,13 +21,12 @@ const createUser = async (req, res) => {
 
   const emailNormalized = email.toLowerCase().trim();
   const name = full_name.trim();
-
   try {
     const hashPassword = await bcrypt.hash(password, 10);
 
     await db.query(
-      `INSERT INTO users(email, password_hash, full_name) VALUES($1, $2, $3)`,
-      [emailNormalized, hashPassword, name]
+      `INSERT INTO users(email, password_hash, full_name, business_name) VALUES($1, $2, $3, $4)`,
+      [emailNormalized, hashPassword, name, business_name]
     );
 
     res.status(201).json({
@@ -51,7 +50,10 @@ const loginUser = async(req,res) =>{
             return res.status(400).json({message:"All details are mandatory!"});    
         }
         const emailNormalized = email.toLowerCase().trim();
-        const result = await db.query('SELECT id, email, password_hash FROM users WHERE email = $1',[emailNormalized]);
+const result = await db.query(
+    'SELECT id, email, password_hash, subscription_status, trial_ends_at FROM users WHERE email = $1',
+    [emailNormalized]
+);
 
         if(result.rows.length === 0){
             return res.status(400).json({ message: "Invalid credentials" });
@@ -63,6 +65,7 @@ const loginUser = async(req,res) =>{
         if(!checkPassword){
             return res.status(400).json({message:"Invalid credentials"});
         }
+        const isTrialExpired = user.subscription_status === 'trialing' && new Date() > new Date(user.trial_ends_at);
 
         const token = jwt.sign({id: user.id, email: user.email}, process.env.JWT_SECRET, {expiresIn:'15m'});
         const refreshToken = jwt.sign(
@@ -90,7 +93,12 @@ res.cookie('refreshToken', refreshToken, {
 });
 
 return res.status(200).json({
-  accessToken: token
+    accessToken: token,
+    userStatus: {
+        status: user.subscription_status,
+        isTrialExpired,
+        trialEndsAt: user.trial_ends_at
+    }
 });
     }
     catch(err){

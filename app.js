@@ -7,6 +7,8 @@ const { registerGateway, getGateways } = require('./src/controllers/adminControl
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 require('./src/queues/retryQueue')
+const { getMetrics } = require('./src/queues/retryQueue');
+const promClient = require('prom-client');
 
 const { verifyStripeSignature } = require('./src/middlewares/verifyStripe');
 const { handleStripeWebhook, getGatewayAnalytics, getWebhookDetails, replayWebhook } = require('./src/controllers/webhookController');
@@ -72,6 +74,11 @@ app.post(
     verifyStripeSignature, 
     handleStripeWebhook 
 );
+
+app.get('/metrics', async (req, res) => {
+    res.set('Content-Type', promClient.register.contentType);
+    res.send(await getMetrics());
+});
 
 app.get('/api/v1/analytics/:gateway_id', authToken, getGatewayAnalytics);
 app.get('/api/v1/analytics/log/:webhook_id', authToken, getWebhookDetails);
