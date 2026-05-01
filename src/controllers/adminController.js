@@ -68,12 +68,12 @@ const registerGateway = async (req, res) => {
        RETURNING id, slug`,
       [name, normalizedProvider, webhook_secret, userId, slug]
     );
-
+    
     return res.status(201).json({
-      id: result.rows[0].id,
-      slug: result.rows[0].slug,
-      url: `http://localhost:3000/api/v1/webhooks/${result.rows[0].id}`
-    });
+    id:   result.rows[0].id,
+    slug: result.rows[0].slug,
+    url:  `http://localhost:3000/api/v1/webhooks/${normalizedProvider.toLowerCase()}/${result.rows[0].id}`
+});
 
   } catch (err) {
     console.error("REGISTER GATEWAY ERROR:", err);
