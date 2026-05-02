@@ -6,47 +6,50 @@ const logWebhook = async (data) => {
         provider_event_id,
         event_type,
         status,
-        http_status,        // passed as http_status from controller
+        http_status,
         payload,
         error_stack,
         last_error_message,
         latency
     } = data;
 
-    const query = `
-        INSERT INTO webhook_logs (
-            gateway_id, 
-            provider_event_id, 
-            event_type, 
-            status,
-            http_status_code, 
-            payload, 
-            error_stack, 
-            last_error_message, 
-            latency_ms
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (provider_event_id, gateway_id)          -- FIX 1: composite key, must match schema
-        DO UPDATE SET 
-            status             = EXCLUDED.status,
-            error_stack        = EXCLUDED.error_stack,
-            last_error_message = EXCLUDED.last_error_message,
-            http_status_code   = EXCLUDED.http_status_code,
-            latency_ms         = EXCLUDED.latency_ms
-        RETURNING id;
-    `;
-
-    const values = [
-        gateway_id,
-        provider_event_id,
-        event_type,
+ const query = `
+    INSERT INTO webhook_logs (
+        gateway_id, 
+        provider_event_id, 
+        event_type, 
         status,
-        http_status,                    // FIX 2: maps correctly to http_status_code column above
-        JSON.stringify(payload),
-        error_stack,
-        last_error_message,
-        latency || 0,
-    ];
+        original_status,
+        http_status_code, 
+        payload, 
+        error_stack, 
+        last_error_message, 
+        latency_ms
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (provider_event_id, gateway_id)
+    DO UPDATE SET 
+        status             = EXCLUDED.status,
+        error_stack        = EXCLUDED.error_stack,
+        last_error_message = EXCLUDED.last_error_message,
+        http_status_code   = EXCLUDED.http_status_code,
+        latency_ms         = EXCLUDED.latency_ms
+        -- original_status intentionally excluded — never overwritten
+    RETURNING id;
+`;
+
+const values = [
+    gateway_id,
+    provider_event_id,
+    event_type,
+    status,        // $4 → status
+    status,        // $5 → original_status (same value, own slot)
+    http_status,   // $6
+    JSON.stringify(payload), // $7
+    error_stack,   // $8
+    last_error_message, // $9
+    latency || 0,  // $10
+];
 
     try {
         const res = await db.query(query, values);

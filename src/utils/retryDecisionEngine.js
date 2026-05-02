@@ -828,19 +828,24 @@ const computeSuccessProbability = ({ profile, attemptNumber, isDNHPattern, histo
 const fetchHistoricalSuccessRate = async (declineCode, provider = 'stripe') => {
     try {
         const res = await db.query(
-            `SELECT
-                COUNT(*) FILTER (WHERE outcome = 'SUCCESS') AS successes,
-                COUNT(*)                                     AS total
+            `SELECT success_count, failure_count
              FROM decline_code_stats
              WHERE decline_code = $1
-               AND provider     = $2
-               AND recorded_at  > NOW() - INTERVAL '30 days'`,
+               AND provider     = $2`,
             [declineCode, provider]
         );
-        const { successes, total } = res.rows[0] ?? {};
-        const totalInt = parseInt(total, 10);
-        if (!total || totalInt < MIN_HISTORICAL_SAMPLES) return null;
-        return { rate: parseInt(successes, 10) / totalInt, total: totalInt };
+
+        const row = res.rows[0];
+        if (!row) return null;
+
+        const successes = parseInt(row.success_count, 10);
+        const failures  = parseInt(row.failure_count, 10);
+        const total     = successes + failures;
+
+        if (total < MIN_HISTORICAL_SAMPLES) return null;
+
+        return { rate: successes / total, total };
+
     } catch (dbErr) {
         console.error('[retryDecisionEngine] DB error in fetchHistoricalSuccessRate:', dbErr?.message);
         return null;
@@ -857,9 +862,16 @@ const fetchHistoricalSuccessRate = async (declineCode, provider = 'stripe') => {
 const recordDeclineCodeOutcome = async (declineCode, outcome, provider = 'stripe') => {
     try {
         await db.query(
-            `INSERT INTO decline_code_stats (decline_code, outcome, provider, recorded_at)
-             VALUES ($1, $2, $3, NOW())`,
-            [declineCode, outcome, provider]
+            `INSERT INTO decline_code_stats (decline_code, provider, success_count, failure_count)
+             VALUES ($1, $2,
+                 CASE WHEN $3 = 'SUCCESS' THEN 1 ELSE 0 END,
+                 CASE WHEN $3 != 'SUCCESS' THEN 1 ELSE 0 END
+             )
+             ON CONFLICT (decline_code, provider) DO UPDATE SET
+                 success_count = decline_code_stats.success_count + CASE WHEN $3 = 'SUCCESS' THEN 1 ELSE 0 END,
+                 failure_count = decline_code_stats.failure_count + CASE WHEN $3 != 'SUCCESS' THEN 1 ELSE 0 END,
+                 last_updated  = NOW()`,
+            [declineCode, provider, outcome]
         );
     } catch (dbErr) {
         console.error('[retryDecisionEngine] DB error in recordDeclineCodeOutcome:', dbErr?.message);
